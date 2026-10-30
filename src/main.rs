@@ -18,10 +18,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     symbols::Marker,
     text::{Line, Span},
-    widgets::{
-        Axis, Block, BorderType, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table,
-        Wrap,
-    },
+    widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Table, Wrap},
 };
 use reqwest::{
     blocking::Client,
@@ -44,29 +41,17 @@ const UPLOAD_DEADLINE: Duration = Duration::from_secs(8);
 
 type Rgb = (u8, u8, u8);
 
-const CYAN: Rgb = (80, 200, 255);
-const GREEN: Rgb = (80, 230, 140);
-const BLUE: Rgb = (100, 150, 255);
-const YELLOW: Rgb = (255, 205, 70);
-const MAGENTA: Rgb = (215, 110, 255);
-const RED: Rgb = (255, 95, 95);
-const GOLD: Rgb = (255, 214, 90);
-const WHITE: Rgb = (255, 255, 255);
-const MUTED: Rgb = (110, 116, 138);
-const TRACK: Rgb = (45, 50, 66);
+const ACCENT: Rgb = (110, 200, 240);
+const DOWN: Rgb = (90, 210, 170);
+const UP: Rgb = (160, 140, 250);
+const LAT: Rgb = (235, 195, 110);
+const JIT: Rgb = (150, 160, 190);
+const BAD: Rgb = (240, 110, 110);
+const MUTED: Rgb = (125, 131, 150);
+const TRACK: Rgb = (62, 66, 80);
 
 fn rgb(c: Rgb) -> Color {
     Color::Rgb(c.0, c.1, c.2)
-}
-
-fn lerp(a: Rgb, b: Rgb, t: f64) -> Rgb {
-    let t = t.clamp(0.0, 1.0);
-    let f = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * t).round() as u8;
-    (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
-}
-
-fn dim(c: Rgb, k: f64) -> Rgb {
-    lerp((0, 0, 0), c, k)
 }
 
 fn fg(c: Rgb) -> Style {
@@ -75,6 +60,10 @@ fn fg(c: Rgb) -> Style {
 
 fn bold(c: Rgb) -> Style {
     fg(c).add_modifier(Modifier::BOLD)
+}
+
+fn muted() -> Style {
+    fg(MUTED)
 }
 
 // ───────────────────────────── Data types ─────────────────────────────
@@ -158,7 +147,6 @@ struct App {
     ran: bool,
     test_started: Option<Instant>,
     elapsed_final: u64,
-    done_at: Option<Instant>,
     shown_progress: f64,
 
     down: Meter,
@@ -189,7 +177,6 @@ impl App {
             ran: false,
             test_started: None,
             elapsed_final: 0,
-            done_at: None,
             shown_progress: 0.0,
             down: Meter::default(),
             up: Meter::default(),
@@ -234,7 +221,6 @@ impl App {
         self.phase_started = Instant::now();
         self.phase_frac = 0.0;
         self.test_started = Some(Instant::now());
-        self.done_at = None;
         self.shown_progress = 0.0;
         self.status.clear();
     }
@@ -272,11 +258,6 @@ impl App {
         }
     }
 
-    fn flashing(&self) -> bool {
-        self.done_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(1500) && (self.tick / 3) % 2 == 0)
-    }
-
     fn elapsed_secs(&self) -> u64 {
         if self.is_testing() {
             self.test_started.map_or(0, |t| t.elapsed().as_secs())
@@ -287,6 +268,14 @@ impl App {
 }
 
 // ───────────────────────────── Database ─────────────────────────────
+
+fn db_path() -> std::path::PathBuf {
+    let mut dir = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    dir.push("netpulse");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.push("netpulse.db");
+    dir
+}
 
 fn init_database() -> rusqlite::Result<Connection> {
     let connection = Connection::open("netpulse.db")?;
@@ -702,7 +691,6 @@ fn apply_update(app: &mut App, update: TestUpdate, connection: &Connection) {
         TestUpdate::Finished => {
             app.elapsed_final = app.test_started.map_or(0, |t| t.elapsed().as_secs());
             app.phase = Phase::Idle;
-            app.done_at = Some(Instant::now());
 
             // Failed metrics are stored as NULL.
             let saved = save_test(
@@ -738,609 +726,254 @@ fn apply_update(app: &mut App, update: TestUpdate, connection: &Connection) {
     }
 }
 
-// ───────────────────────────── Visual helpers ─────────────────────────────
+// ───────────────────────────── UI ─────────────────────────────
 
-fn phase_color(app: &App) -> Rgb {
-    match app.phase {
-        Phase::Latency => YELLOW,
-        Phase::Download => GREEN,
-        Phase::Upload => BLUE,
-        Phase::Idle => {
-            if !app.ran {
-                CYAN
-            } else if app.has_errors() {
-                YELLOW
-            } else {
-                GREEN
-            }
-        }
-    }
-}
-
-/// Per-character gradient from `from` to `to`, with a bright shine sweeping across.
-fn shimmer(text: &str, from: Rgb, to: Rgb, tick: usize, bold_text: bool) -> Vec<Span<'static>> {
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len().max(1);
-    let period = len + 14;
-    let center = (tick % period) as f64 - 7.0;
-
-    chars
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let base = lerp(from, to, i as f64 / len as f64);
-            let boost = (1.0 - (i as f64 - center).abs() / 5.0).max(0.0);
-            let color = lerp(base, WHITE, boost * 0.85);
-
-            let mut style = fg(color);
-            if bold_text {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-
-            Span::styled(c.to_string(), style)
-        })
-        .collect()
-}
-
-/// A smooth (1/8th-block precision) gradient progress bar with a moving shine.
-fn fancy_bar(width: usize, frac: f64, base: Rgb, tick: usize, shine: bool) -> Vec<Span<'static>> {
-    const PARTIAL: [&str; 8] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
-
-    let frac = frac.clamp(0.0, 1.0);
-    let fill = frac * width as f64;
-    let full = fill.floor() as usize;
-    let part = (((fill - full as f64) * 8.0) as usize).min(7);
-    let center = if shine && full > 0 {
-        (tick % (full + 10)) as f64 - 5.0
-    } else {
-        -100.0
-    };
-
-    let mut spans = Vec::with_capacity(width);
-
-    for i in 0..width {
-        if i < full {
-            let t = i as f64 / full.max(1) as f64;
-            let color = lerp(dim(base, 0.35), base, t);
-            let boost = (1.0 - (i as f64 - center).abs() / 4.0).max(0.0);
-            spans.push(Span::styled("█", fg(lerp(color, WHITE, boost * 0.8))));
-        } else if i == full && part > 0 {
-            spans.push(Span::styled(PARTIAL[part], fg(base)));
-        } else {
-            spans.push(Span::styled("░", fg(TRACK)));
-        }
-    }
-
-    spans
-}
-
-fn big_glyph(c: char) -> [&'static str; 3] {
-    match c {
-        '0' => ["┏━┓", "┃ ┃", "┗━┛"],
-        '1' => [" ╻ ", " ┃ ", " ╹ "],
-        '2' => ["╺━┓", "┏━┛", "┗━╸"],
-        '3' => ["╺━┓", "╺━┫", "╺━┛"],
-        '4' => ["╻ ╻", "┗━┫", "  ╹"],
-        '5' => ["┏━╸", "┗━┓", "╺━┛"],
-        '6' => ["┏━╸", "┣━┓", "┗━┛"],
-        '7' => ["╺━┓", "  ┃", "  ╹"],
-        '8' => ["┏━┓", "┣━┫", "┗━┛"],
-        '9' => ["┏━┓", "┗━┫", "╺━┛"],
-        '.' => [" ", " ", "▪"],
-        _ => ["   ", "   ", "   "],
-    }
-}
-
-fn big_text(text: &str) -> [String; 3] {
-    let mut rows = [String::new(), String::new(), String::new()];
-
-    for (index, c) in text.chars().enumerate() {
-        let glyph = big_glyph(c);
-        for (row, part) in rows.iter_mut().zip(glyph.iter()) {
-            if index > 0 {
-                row.push(' ');
-            }
-            row.push_str(part);
-        }
-    }
-
-    rows
-}
-
-fn rounded_block(title: &str, color: Color) -> Block<'static> {
-    Block::default()
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(color))
-}
+const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn metric(value: Option<f64>, unit: &str) -> String {
     match value {
         Some(value) => format!("{value:.2} {unit}"),
-        None => "--".into(),
+        None => "—".into(),
     }
 }
 
-fn breath(tick: usize, speed: f64) -> f64 {
-    ((tick as f64 * speed).sin() + 1.0) / 2.0
+fn phase_color(app: &App) -> Rgb {
+    match app.phase {
+        Phase::Latency => LAT,
+        Phase::Download => DOWN,
+        Phase::Upload => UP,
+        Phase::Idle => {
+            if !app.ran {
+                ACCENT
+            } else if app.has_errors() {
+                LAT
+            } else {
+                DOWN
+            }
+        }
+    }
 }
 
-// ───────────────────────────── UI ─────────────────────────────
-
 fn ui(frame: &mut Frame, app: &App) {
+    let info_height = if app.has_errors() { 5 } else { 3 };
+
     let areas = Layout::default()
         .direction(Direction::Vertical)
+        .horizontal_margin(2)
+        .vertical_margin(1)
         .constraints([
-            Constraint::Length(3), // header
-            Constraint::Length(4), // status + progress
-            Constraint::Min(10),   // main
-            Constraint::Length(1), // key hints
+            Constraint::Length(1), // header
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // status
+            Constraint::Length(1), // progress line
+            Constraint::Length(1), // spacer
+            Constraint::Min(6),    // main
+            Constraint::Length(1), // keys
         ])
         .split(frame.area());
 
     draw_header(frame, areas[0], app);
-    draw_status(frame, areas[1], app);
+    draw_status(frame, areas[2], app);
+    draw_progress(frame, areas[3], app);
 
     match app.view {
-        View::Dashboard => draw_dashboard(frame, areas[2], app),
-        View::History => draw_history(frame, areas[2], app),
+        View::Dashboard => draw_dashboard(frame, areas[5], app, info_height),
+        View::History => draw_history(frame, areas[5], app),
     }
 
-    draw_keys(frame, areas[3], app);
-}
-
-// A heartbeat line: tall spikes scroll past like an ECG.
-const ECG: [usize; 28] = [
-    1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 3, 8, 2, 1, 1, 1, 1, 2, 3, 2, 1, 1, 1, 1, 1, 1,
-];
-const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-fn ecg_spans(width: usize, tick: usize, base: Rgb, fast: bool) -> Vec<Span<'static>> {
-    let shift = if fast { tick } else { tick / 3 };
-
-    (0..width)
-        .map(|i| {
-            let h = ECG[(i + shift) % ECG.len()];
-            let fade = i as f64 / width.max(1) as f64;
-            let color = lerp(dim(base, 0.2), base, fade);
-            Span::styled(BLOCKS[h].to_string(), fg(color))
-        })
-        .collect()
+    draw_keys(frame, areas[6], app);
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let color = phase_color(app);
-    let inner_w = area.width.saturating_sub(2) as usize;
+    let left = Line::from(vec![
+        Span::styled("netpulse", bold(ACCENT)),
+        Span::styled("  internet speed", muted()),
+    ]);
 
-    let glyph = ["●", "◉", "◎", "◉"][(app.tick / 4) % 4];
-    let title = "N E T P U L S E";
-
-    let active_tab = Style::default()
-        .fg(Color::Black)
-        .bg(rgb(CYAN))
-        .add_modifier(Modifier::BOLD);
-
-    let (dash_style, hist_style) = match app.view {
-        View::Dashboard => (active_tab, fg(MUTED)),
-        View::History => (fg(MUTED), active_tab),
+    let tab = |label: &'static str, active: bool| {
+        if active {
+            Span::styled(label, bold(ACCENT).add_modifier(Modifier::UNDERLINED))
+        } else {
+            Span::styled(label, muted())
+        }
     };
 
-    let mut spans = vec![
-        Span::raw(" "),
-        Span::styled(glyph, bold(color)),
-        Span::raw(" "),
-    ];
-    spans.extend(shimmer(title, CYAN, MAGENTA, app.tick, true));
-    spans.push(Span::raw("   "));
-    spans.push(Span::styled(" Dashboard ", dash_style));
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(" History ", hist_style));
-    spans.push(Span::raw("   "));
+    let right = Line::from(vec![
+        tab("dashboard", app.view == View::Dashboard),
+        Span::raw("   "),
+        tab("history", app.view == View::History),
+    ]);
 
-    let used = 3 + title.chars().count() + 3 + 11 + 1 + 9 + 3;
-    let ecg_width = inner_w.saturating_sub(used + 1);
-
-    if ecg_width >= 6 {
-        spans.extend(ecg_spans(ecg_width, app.tick, color, app.is_testing()));
-    }
-
-    let header = Paragraph::new(Line::from(spans)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(fg(dim(color, 0.8))),
-    );
-
-    frame.render_widget(header, area);
+    frame.render_widget(Paragraph::new(left), area);
+    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), area);
 }
-
-const SPIN: [&str; 10] = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
-const LATENCY_VERBS: [&str; 5] = [
-    "Pinging the cloud",
-    "Echolocating",
-    "Bouncing packets",
-    "Listening for echoes",
-    "Poking servers",
-];
-const DOWNLOAD_VERBS: [&str; 5] = [
-    "Slurping bytes",
-    "Hauling data",
-    "Reeling in packets",
-    "Siphoning the internet",
-    "Catching bits",
-];
-const UPLOAD_VERBS: [&str; 5] = [
-    "Launching bytes",
-    "Beaming data skyward",
-    "Slinging packets",
-    "Pushing data uphill",
-    "Sending smoke signals",
-];
 
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     let color = phase_color(app);
-    let inner_w = area.width.saturating_sub(2) as usize;
 
-    let mut line1: Vec<Span> = vec![Span::raw(" ")];
-
-    if app.is_testing() {
-        let verbs: &[&str] = match app.phase {
-            Phase::Latency => &LATENCY_VERBS,
-            Phase::Download => &DOWNLOAD_VERBS,
-            _ => &UPLOAD_VERBS,
+    let line = if app.is_testing() {
+        let label = match app.phase {
+            Phase::Latency => "Measuring latency",
+            Phase::Download => "Measuring download",
+            _ => "Measuring upload",
         };
-        let verb = verbs[(app.phase_started.elapsed().as_secs() / 2) as usize % verbs.len()];
 
-        line1.push(Span::styled(SPIN[(app.tick / 2) % SPIN.len()], bold(color)));
-        line1.push(Span::raw(" "));
-        line1.extend(shimmer(&format!("{verb}…"), color, color, app.tick, true));
-        line1.push(Span::styled(
-            format!(
-                "  ({}s · {:.0}%)",
-                app.elapsed_secs(),
-                app.shown_progress.min(100.0)
-            ),
-            fg(MUTED),
-        ));
+        Line::from(vec![
+            Span::styled(SPIN[(app.tick / 2) % SPIN.len()], fg(color)),
+            Span::raw(" "),
+            Span::raw(label),
+            Span::styled(format!("  ·  {}s", app.elapsed_secs()), muted()),
+        ])
     } else if app.ran {
-        let icon = if app.has_errors() { "▲" } else { "✔" };
-        line1.push(Span::styled(icon, bold(color)));
-        line1.push(Span::raw(" "));
-        line1.push(Span::styled(app.status.clone(), bold(color)));
-        line1.push(Span::styled(
-            format!("  (took {}s)", app.elapsed_secs()),
-            fg(MUTED),
-        ));
+        let icon = if app.has_errors() { "!" } else { "✓" };
+
+        Line::from(vec![
+            Span::styled(icon, bold(color)),
+            Span::raw(" "),
+            Span::raw(app.status.clone()),
+            Span::styled(format!("  ·  {}s", app.elapsed_secs()), muted()),
+        ])
     } else {
-        let tone = lerp(MUTED, CYAN, breath(app.tick, 0.12));
-        line1.push(Span::styled("✻", bold(tone)));
-        line1.push(Span::raw(" "));
-        line1.push(Span::styled(
-            "Ready when you are — press R to launch a speed test",
-            fg(tone),
-        ));
-    }
+        Line::from(Span::styled("Ready — press r to start a test", muted()))
+    };
 
-    let bar = fancy_bar(
-        inner_w.saturating_sub(2),
-        app.shown_progress / 100.0,
-        color,
-        app.tick,
-        app.is_testing(),
-    );
-    let mut line2 = vec![Span::raw(" ")];
-    line2.extend(bar);
-
-    let panel = Paragraph::new(vec![Line::from(line1), Line::from(line2)])
-        .block(rounded_block("Status", rgb(color)));
-
-    frame.render_widget(panel, area);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
-const MBPS_SCALES: [f64; 10] = [
-    10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0, 10000.0,
-];
+/// A thin single-line progress indicator.
+fn draw_progress(frame: &mut Frame, area: Rect, app: &App) {
+    let width = area.width as usize;
+    let filled = ((app.shown_progress / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
 
-fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App) {
-    let show_flow = area.height >= 21;
+    let color = phase_color(app);
 
-    let rows = if show_flow {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(7),
-                Constraint::Length(3),
-                Constraint::Min(8),
-            ])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(7), Constraint::Min(5)])
-            .split(area)
-    };
+    let line = Line::from(vec![
+        Span::styled("━".repeat(filled), fg(color)),
+        Span::styled("─".repeat(width - filled), fg(TRACK)),
+    ]);
 
-    let cards = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25); 4])
-        .split(rows[0]);
+    frame.render_widget(Paragraph::new(line), area);
+}
 
-    let flash = app.flashing();
+fn draw_dashboard(frame: &mut Frame, area: Rect, app: &App, info_height: u16) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),           // metrics
+            Constraint::Length(1),           // spacer
+            Constraint::Min(5),              // chart
+            Constraint::Length(info_height), // summary / errors
+        ])
+        .split(area);
 
-    let specs = [
-        CardSpec {
-            title: "Download",
-            value: app.down.value(),
-            unit: "Mbps",
-            color: GREEN,
-            failed: app.download_err.is_some(),
-            active: app.phase == Phase::Download,
-            quality_bar: false,
-        },
-        CardSpec {
-            title: "Upload",
-            value: app.up.value(),
-            unit: "Mbps",
-            color: BLUE,
-            failed: app.upload_err.is_some(),
-            active: app.phase == Phase::Upload,
-            quality_bar: false,
-        },
-        CardSpec {
-            title: "Avg Latency",
-            value: app.lat.value(),
-            unit: "ms",
-            color: YELLOW,
-            failed: app.latency_err.is_some(),
-            active: app.phase == Phase::Latency,
-            quality_bar: true,
-        },
-        CardSpec {
-            title: "Jitter",
-            value: app.jit.value(),
-            unit: "ms",
-            color: MAGENTA,
-            failed: false,
-            active: app.phase == Phase::Latency,
-            quality_bar: true,
-        },
-    ];
+    draw_metrics(frame, rows[0], app);
+    draw_chart(frame, rows[2], app);
+    draw_info(frame, rows[3], app);
+}
 
-    for (area, spec) in cards.iter().zip(specs.iter()) {
-        draw_card(frame, *area, spec, app.tick, flash);
-    }
-
-    let bottom = if show_flow {
-        draw_flow(frame, rows[1], app);
-        rows[2]
-    } else {
-        rows[1]
-    };
-
+fn draw_metrics(frame: &mut Frame, area: Rect, app: &App) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-        .split(bottom);
+        .constraints([Constraint::Percentage(25); 4])
+        .split(area);
 
-    draw_chart(frame, columns[0], app);
+    // (label, dot color, value, unit, failed, measuring)
+    let metrics: [(&str, Rgb, Option<f64>, &str, bool, bool); 4] = [
+        (
+            "Download",
+            DOWN,
+            app.down.value(),
+            "Mbps",
+            app.download_err.is_some(),
+            app.phase == Phase::Download,
+        ),
+        (
+            "Upload",
+            UP,
+            app.up.value(),
+            "Mbps",
+            app.upload_err.is_some(),
+            app.phase == Phase::Upload,
+        ),
+        (
+            "Latency",
+            LAT,
+            app.lat.value(),
+            "ms",
+            app.latency_err.is_some(),
+            app.phase == Phase::Latency,
+        ),
+        (
+            "Jitter",
+            JIT,
+            app.jit.value(),
+            "ms",
+            false,
+            app.phase == Phase::Latency,
+        ),
+    ];
 
-    if app.has_errors() && !app.is_testing() {
-        // Give error messages the whole column so they're fully readable.
-        draw_summary(frame, columns[1], app);
-    } else {
-        let right = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(7), Constraint::Min(4)])
-            .split(columns[1]);
+    for (column, (label, color, value, unit, failed, measuring)) in columns.iter().zip(metrics) {
+        let value_line = match value {
+            Some(v) => {
+                let text = if v >= 100.0 {
+                    format!("{v:.0}")
+                } else {
+                    format!("{v:.1}")
+                };
 
-        draw_samples(frame, right[0], app);
-        draw_summary(frame, right[1], app);
-    }
-}
-
-struct CardSpec<'a> {
-    title: &'a str,
-    value: Option<f64>,
-    unit: &'static str,
-    color: Rgb,
-    failed: bool,
-    active: bool,
-    /// For ms metrics: lower is better, so the bar shows "quality" (full = great).
-    quality_bar: bool,
-}
-
-fn draw_card(frame: &mut Frame, area: Rect, spec: &CardSpec, tick: usize, flash: bool) {
-    let border = if flash { WHITE } else { spec.color };
-    let inner_w = area.width.saturating_sub(2) as usize;
-
-    let lines: Vec<Line> = match spec.value {
-        Some(value) => {
-            let text = if value >= 100.0 {
-                format!("{value:.0}")
-            } else {
-                format!("{value:.1}")
-            };
-
-            let rows = big_text(&text);
-            let mut lines: Vec<Line> = if rows[0].chars().count() <= inner_w {
-                rows.into_iter()
-                    .map(|row| Line::from(Span::styled(row, bold(spec.color))))
-                    .collect()
-            } else {
-                vec![
-                    Line::from(""),
-                    Line::from(Span::styled(format!("{value:.2}"), bold(spec.color))),
-                    Line::from(""),
-                ]
-            };
-
-            lines.push(Line::from(Span::styled(spec.unit, fg(MUTED))));
-
-            let frac = if spec.quality_bar {
-                (1.0 - value / 100.0).clamp(0.05, 1.0)
-            } else {
-                let max = MBPS_SCALES
-                    .iter()
-                    .copied()
-                    .find(|scale| *scale >= value)
-                    .unwrap_or(10000.0);
-                value / max
-            };
-
-            lines.push(Line::from(fancy_bar(
-                inner_w.saturating_sub(2),
-                frac,
-                spec.color,
-                tick,
-                spec.active,
-            )));
-
-            lines
-        }
-        None if spec.failed => vec![
-            Line::from(""),
-            Line::from(Span::styled("✗ FAILED", bold(RED))),
-            Line::from(Span::styled("see the issues panel", fg(MUTED))),
-        ],
-        None if spec.active => {
-            let mut spinner = vec![
-                Span::styled(SPIN[(tick / 2) % SPIN.len()], bold(spec.color)),
-                Span::raw(" "),
-            ];
-            spinner.extend(shimmer("measuring", spec.color, spec.color, tick, false));
-
-            vec![Line::from(""), Line::from(spinner)]
-        }
-        None => vec![
-            Line::from(""),
-            Line::from(Span::styled("- - -", fg(MUTED))),
-            Line::from(Span::styled(spec.unit, fg(TRACK))),
-        ],
-    };
-
-    let card = Paragraph::new(lines)
-        .alignment(Alignment::Center)
-        .block(rounded_block(spec.title, rgb(border)));
-
-    frame.render_widget(card, area);
-}
-
-/// Animated "packet stream" between YOU and the SERVER.
-fn draw_flow(frame: &mut Frame, area: Rect, app: &App) {
-    let color = phase_color(app);
-    let inner_w = area.width.saturating_sub(2) as usize;
-
-    let left = " YOU ";
-    let right = " ☁ SERVER ";
-    let mid = inner_w.saturating_sub(left.chars().count() + right.chars().count());
-
-    if mid < 8 {
-        return;
-    }
-
-    let mut cells: Vec<(char, Rgb)> = vec![('─', TRACK); mid];
-    let mut put = |index: usize, c: char, col: Rgb| {
-        if index < mid {
-            cells[index] = (c, col);
-        }
-    };
-
-    let title = match app.phase {
-        Phase::Download => {
-            // Packets travel right → left, toward you.
-            let spacing = 7;
-            let offset = app.tick % mid;
-            for start in (0..mid).step_by(spacing) {
-                let head = (start + mid - offset) % mid;
-                put(head, '●', color);
-                put(head + 1, '━', dim(color, 0.6));
-                put(head + 2, '╌', dim(color, 0.35));
+                Line::from(vec![
+                    Span::styled(text, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(format!(" {unit}"), muted()),
+                ])
             }
-            "downstream ◀◀◀"
-        }
-        Phase::Upload => {
-            // Packets travel left → right, toward the server.
-            let spacing = 7;
-            let offset = app.tick % mid;
-            for start in (0..mid).step_by(spacing) {
-                let head = (start + offset) % mid;
-                put(head, '●', color);
-                if head >= 1 {
-                    put(head - 1, '━', dim(color, 0.6));
-                }
-                if head >= 2 {
-                    put(head - 2, '╌', dim(color, 0.35));
-                }
-            }
-            "upstream ▶▶▶"
-        }
-        Phase::Latency => {
-            // A single ping bounces back and forth.
-            let period = 2 * (mid - 1);
-            let p = (app.tick * 2) % period;
-            let head = if p < mid { p } else { period - p };
-            put(head, '◆', color);
-            if head >= 1 {
-                put(head - 1, '━', dim(color, 0.5));
-            }
-            put(head + 1, '━', dim(color, 0.5));
-            "ping ⇄"
-        }
-        Phase::Idle => {
-            let head = (app.tick / 2) % mid;
-            put(head, '•', lerp(TRACK, color, breath(app.tick, 0.2)));
-            "idle"
-        }
-    };
+            None if failed => Line::from(Span::styled("failed", fg(BAD))),
+            None if measuring => Line::from(Span::styled("…", muted())),
+            None => Line::from(Span::styled("—", muted())),
+        };
 
-    let mut spans = vec![Span::styled(left, bold(CYAN))];
-    for (c, col) in cells {
-        spans.push(Span::styled(c.to_string(), fg(col)));
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("● ", fg(color)),
+                Span::styled(label, muted()),
+            ]),
+            value_line,
+        ];
+
+        frame.render_widget(Paragraph::new(lines), *column);
     }
-    spans.push(Span::styled(right, bold(MAGENTA)));
-
-    let panel = Paragraph::new(Line::from(spans)).block(rounded_block(
-        &format!("Packet stream · {title}"),
-        rgb(dim(color, 0.8)),
-    ));
-
-    frame.render_widget(panel, area);
 }
 
 fn draw_chart(frame: &mut Frame, area: Rect, app: &App) {
-    let color = phase_color(app);
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(fg(TRACK))
+        .title(Span::styled(" throughput ", muted()));
 
-    let waiting = app.live_down.is_empty() && app.live_up.is_empty();
+    if app.live_down.is_empty() && app.live_up.is_empty() {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-    if waiting {
-        // Alive-looking idle animation: two drifting sine waves.
-        let phase = app.tick as f64 * 0.18;
-        let points: Vec<(f64, f64)> = (0..160)
-            .map(|i| {
-                let x = i as f64 * 100.0 / 159.0;
-                let y = (x * 0.22 - phase).sin() * 0.6 + (x * 0.07 + phase * 0.5).sin() * 0.3;
-                (x, y)
-            })
-            .collect();
+        let text = if app.is_testing() {
+            "Warming up…"
+        } else {
+            "Press r to run a test"
+        };
 
-        let datasets = vec![
-            Dataset::default()
-                .marker(Marker::Braille)
-                .graph_type(GraphType::Line)
-                .style(fg(dim(color, 0.7)))
-                .data(points.as_slice()),
-        ];
+        if inner.height > 0 {
+            let middle = Rect {
+                x: inner.x,
+                y: inner.y + inner.height / 2,
+                width: inner.width,
+                height: 1,
+            };
 
-        let chart = Chart::new(datasets)
-            .block(rounded_block("Live throughput", rgb(dim(color, 0.8))))
-            .x_axis(Axis::default().bounds([0.0, 100.0]))
-            .y_axis(Axis::default().bounds([-1.2, 1.2]));
-
-        frame.render_widget(chart, area);
+            frame.render_widget(
+                Paragraph::new(Span::styled(text, muted())).alignment(Alignment::Center),
+                middle,
+            );
+        }
         return;
     }
 
@@ -1357,107 +990,70 @@ fn draw_chart(frame: &mut Frame, area: Rect, app: &App) {
 
     let datasets = vec![
         Dataset::default()
-            .name("Download")
+            .name("download")
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(fg(GREEN))
+            .style(fg(DOWN))
             .data(app.live_down.as_slice()),
         Dataset::default()
-            .name("Upload")
+            .name("upload")
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(fg(BLUE))
+            .style(fg(UP))
             .data(app.live_up.as_slice()),
     ];
 
     let chart = Chart::new(datasets)
-        .block(rounded_block("Live throughput", rgb(dim(color, 0.8))))
+        .block(block)
         .x_axis(
             Axis::default()
-                .style(fg(MUTED))
+                .style(fg(TRACK))
                 .bounds([0.0, x_max])
                 .labels(vec![
-                    Span::styled("0s", fg(MUTED)),
-                    Span::styled(format!("{x_max:.0}s"), fg(MUTED)),
+                    Span::styled("0s", muted()),
+                    Span::styled(format!("{x_max:.0}s"), muted()),
                 ]),
         )
         .y_axis(
             Axis::default()
-                .style(fg(MUTED))
+                .style(fg(TRACK))
                 .bounds([0.0, y_max])
                 .labels(vec![
-                    Span::styled("0", fg(MUTED)),
-                    Span::styled(format!("{y_max:.0} Mbps"), fg(MUTED)),
+                    Span::styled("0", muted()),
+                    Span::styled(format!("{y_max:.0} Mbps"), muted()),
                 ]),
         );
 
     frame.render_widget(chart, area);
 }
 
-fn draw_samples(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines: Vec<Line> = Vec::new();
-
-    if app.samples.is_empty() {
-        let dots = ".".repeat((app.tick / 6) % 4);
-        lines.push(Line::from(Span::styled(
-            if app.phase == Phase::Latency {
-                format!("Listening{dots}")
-            } else {
-                "No samples yet".to_string()
-            },
-            fg(MUTED),
-        )));
-    } else {
-        let max = app
-            .samples
-            .iter()
-            .cloned()
-            .fold(f64::MIN, f64::max)
-            .max(1.0);
-
-        for (index, value) in app.samples.iter().enumerate() {
-            let bar_len = ((value / max) * 16.0).round().max(1.0) as usize;
-            let color = lerp(GREEN, RED, value / 120.0);
-
-            lines.push(Line::from(vec![
-                Span::styled(format!("#{} ", index + 1), fg(MUTED)),
-                Span::styled("█".repeat(bar_len), fg(color)),
-                Span::raw(format!(" {value:.1} ms")),
-            ]));
-        }
-    }
-
-    let panel = Paragraph::new(lines).block(rounded_block("Latency samples", rgb(YELLOW)));
-    frame.render_widget(panel, area);
-}
-
-fn verdict(download: f64) -> (usize, &'static str) {
+fn verdict(download: f64) -> &'static str {
     if download < 3.0 {
-        (1, "Barely crawling — basic browsing only")
+        "Basic browsing only"
     } else if download < 10.0 {
-        (2, "Fine for browsing and SD video")
+        "Fine for browsing and SD video"
     } else if download < 35.0 {
-        (3, "Smooth HD streaming & video calls")
+        "Smooth HD streaming and video calls"
     } else if download < 100.0 {
-        (4, "Great for 4K streaming and busy homes")
+        "Great for 4K streaming and busy homes"
     } else {
-        (5, "Blazing fast — gaming, 8K, huge downloads")
+        "Very fast — gaming, 8K, large downloads"
     }
 }
 
 fn latency_note(latency: f64) -> &'static str {
     if latency < 20.0 {
-        "Latency: excellent for gaming"
+        "excellent latency for gaming"
     } else if latency < 50.0 {
-        "Latency: good for calls & games"
+        "good latency for calls and games"
     } else if latency < 100.0 {
-        "Latency: fair — some lag in games"
+        "fair latency, some lag in games"
     } else {
-        "Latency: high — expect lag"
+        "high latency, expect lag"
     }
 }
 
-fn draw_summary(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_info(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
 
     let errors = [
@@ -1468,140 +1064,113 @@ fn draw_summary(frame: &mut Frame, area: Rect, app: &App) {
 
     for (name, error) in errors {
         if let Some(message) = error {
-            lines.push(Line::from(Span::styled(format!("✗ {name}"), bold(RED))));
-            lines.push(Line::from(Span::styled(
-                format!("  {message}"),
-                fg((190, 190, 200)),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled(format!("✗ {name}  "), bold(BAD)),
+                Span::styled(message.clone(), muted()),
+            ]));
         }
     }
 
-    if app.is_testing() {
-        if lines.is_empty() {
-            let dots = ".".repeat((app.tick / 6) % 4);
-            lines.push(Line::from(Span::styled(
-                format!("Crunching the numbers{dots}"),
-                fg(MUTED),
-            )));
-        }
-    } else if app.has_results() {
-        if !lines.is_empty() {
-            lines.push(Line::from(""));
-        }
+    if !app.samples.is_empty() {
+        let values: Vec<String> = app.samples.iter().map(|v| format!("{v:.1}")).collect();
+
+        lines.push(Line::from(vec![
+            Span::styled("Latency samples  ", muted()),
+            Span::raw(values.join(" · ")),
+            Span::styled(" ms", muted()),
+        ]));
+    }
+
+    if !app.is_testing() && app.has_results() {
+        let mut spans = vec![Span::styled("Verdict  ", muted())];
 
         if let Some(download) = app.down.target {
-            let (stars, message) = verdict(download);
-
-            let mut star_line = shimmer(&"★".repeat(stars), GOLD, GOLD, app.tick, true);
-            star_line.push(Span::styled("☆".repeat(5 - stars), fg(TRACK)));
-            lines.push(Line::from(star_line));
-            lines.push(Line::from(Span::styled(message, fg(WHITE))));
+            spans.push(Span::raw(verdict(download)));
         }
 
         if let Some(latency) = app.lat.target {
-            lines.push(Line::from(Span::styled(latency_note(latency), fg(MUTED))));
+            if app.down.target.is_some() {
+                spans.push(Span::styled(" · ", muted()));
+            }
+            spans.push(Span::raw(latency_note(latency)));
         }
-    } else if lines.is_empty() {
-        let tone = lerp(MUTED, CYAN, breath(app.tick, 0.12));
-        lines.push(Line::from(Span::styled(
-            "Press R to launch a test",
-            fg(tone),
-        )));
+
+        lines.push(Line::from(spans));
     }
 
-    let (title, color) = if app.has_errors() {
-        ("Issues & verdict", RED)
-    } else if app.has_results() && !app.is_testing() {
-        ("Verdict", GOLD)
-    } else {
-        ("Summary", MUTED)
-    };
-
-    let panel = Paragraph::new(lines)
-        .wrap(Wrap { trim: true })
-        .block(rounded_block(title, rgb(color)));
-
+    let panel = Paragraph::new(lines).wrap(Wrap { trim: true });
     frame.render_widget(panel, area);
 }
 
 fn draw_history(frame: &mut Frame, area: Rect, app: &App) {
-    let header = Row::new(["Date / time", "Download", "", "Upload", "Latency", "Jitter"])
-        .style(bold(CYAN))
-        .bottom_margin(1);
+    let rows_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(3)])
+        .split(area);
 
-    let max_download = app
-        .history
-        .iter()
-        .filter_map(|record| record.download)
-        .fold(1.0_f64, f64::max);
+    frame.render_widget(
+        Paragraph::new(Span::styled("Recent tests, newest first", muted())),
+        rows_layout[0],
+    );
+
+    if app.history.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No saved tests yet — press r to run one",
+                muted(),
+            )),
+            rows_layout[1],
+        );
+        return;
+    }
+
+    let header = Row::new(["Date / time", "Download", "Upload", "Latency", "Jitter"])
+        .style(muted())
+        .bottom_margin(1);
 
     let rows: Vec<Row> = app
         .history
         .iter()
         .map(|record| {
-            let bar = match record.download {
-                Some(value) => Line::from(fancy_bar(12, value / max_download, GREEN, 0, false)),
-                None => Line::from(Span::styled("failed", fg(RED))),
-            };
-
             Row::new(vec![
-                Cell::from(record.timestamp.clone()).style(fg((170, 175, 190))),
-                Cell::from(metric(record.download, "Mbps")).style(fg(GREEN)),
-                Cell::from(bar),
-                Cell::from(metric(record.upload, "Mbps")).style(fg(BLUE)),
-                Cell::from(metric(record.latency, "ms")).style(fg(YELLOW)),
-                Cell::from(metric(record.jitter, "ms")).style(fg(MAGENTA)),
+                Cell::from(record.timestamp.clone()).style(muted()),
+                Cell::from(metric(record.download, "Mbps")).style(fg(DOWN)),
+                Cell::from(metric(record.upload, "Mbps")).style(fg(UP)),
+                Cell::from(metric(record.latency, "ms")).style(fg(LAT)),
+                Cell::from(metric(record.jitter, "ms")).style(fg(JIT)),
             ])
         })
         .collect();
 
     let widths = [
         Constraint::Length(21),
-        Constraint::Length(14),
-        Constraint::Length(14),
-        Constraint::Length(14),
+        Constraint::Length(15),
+        Constraint::Length(15),
         Constraint::Length(12),
         Constraint::Min(10),
     ];
 
-    let title = if app.history.is_empty() {
-        "Recent tests — none saved yet, press R"
-    } else {
-        "Recent tests (newest first)"
-    };
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(rounded_block(title, rgb(CYAN)));
-
-    frame.render_widget(table, area);
+    frame.render_widget(Table::new(rows, widths).header(header), rows_layout[1]);
 }
 
 fn draw_keys(frame: &mut Frame, area: Rect, app: &App) {
-    let key = Style::default()
-        .fg(Color::Black)
-        .bg(rgb(CYAN))
-        .add_modifier(Modifier::BOLD);
-    let label = fg((170, 175, 190));
+    let key = |k: &'static str| Span::styled(k, bold(ACCENT));
 
+    let run = if app.is_testing() { " running" } else { " run" };
     let toggle = match app.view {
-        View::Dashboard => " History ",
-        View::History => " Dashboard ",
-    };
-
-    let run_label = if app.is_testing() {
-        " Test running "
-    } else {
-        " Run test "
+        View::Dashboard => " history",
+        View::History => " dashboard",
     };
 
     let line = Line::from(vec![
-        Span::styled(" R ", key),
-        Span::styled(run_label, label),
-        Span::styled(" H ", key),
-        Span::styled(toggle, label),
-        Span::styled(" Q ", key),
-        Span::styled(" Quit ", label),
+        key("r"),
+        Span::styled(run, muted()),
+        Span::raw("    "),
+        key("h"),
+        Span::styled(toggle, muted()),
+        Span::raw("    "),
+        key("q"),
+        Span::styled(" quit", muted()),
     ]);
 
     frame.render_widget(Paragraph::new(line), area);

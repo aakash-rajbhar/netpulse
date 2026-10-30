@@ -2,6 +2,8 @@
 
 A terminal-based internet speed test written in Rust. NetPulse measures download speed, upload speed, latency, and jitter, visualizes a live test in the terminal, and keeps a local history of past results in SQLite.
 
+![Preview](image.png)
+
 ## Features
 
 - Live download, upload, latency, and jitter measurements.
@@ -24,23 +26,106 @@ A terminal-based internet speed test written in Rust. NetPulse measures download
 ## Requirements
 
 - A recent stable Rust toolchain (the project uses the 2024 edition).
+- A C compiler for the bundled SQLite build (`build-essential` on Debian/Ubuntu, Xcode Command Line Tools on macOS, MSVC Build Tools on Windows).
 - An active internet connection (the speed tests use public Cloudflare endpoints).
 
 ## Getting Started
 
+### 1. Install Rust
+
+Install the stable Rust toolchain with [rustup](https://rustup.rs/):
+
+- **Windows:** download and run `rustup-init.exe` from <https://rustup.rs/>.
+- **macOS / Linux:** run `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`.
+
+Restart the terminal after installing so `cargo` is on your `PATH`, then verify:
+
+```bash
+cargo --version
+```
+
+### 2. Clone and build
+
 ```bash
 git clone https://github.com/aakash-rajbhar/netpulse.git
 cd netpulse
-cargo run --release
-```
-
-To build without running:
-
-```bash
 cargo build --release
 ```
 
-The binary is written to `target/release/netpulse`.
+The binary is written to `target/release/netpulse` (`netpulse.exe` on Windows).
+
+### 3. Make the `netpulse` command available
+
+To run `netpulse` from any directory, install the binary with Cargo:
+
+```bash
+cargo install --path .
+```
+
+Cargo installs it into `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin` on Windows), which rustup adds to your `PATH`. Open a new terminal and confirm it is found:
+
+```bash
+# macOS / Linux
+command -v netpulse
+
+# Windows PowerShell
+Get-Command netpulse
+```
+
+If you prefer not to install it, run the binary directly from the project directory using the OS-specific commands below.
+
+## Run NetPulse by Operating System
+
+Launch NetPulse in a terminal that supports 256 colors. The app takes over the screen and restores it when you quit.
+
+### Windows
+
+Use **Windows Terminal**, **PowerShell**, or **Command Prompt**.
+
+```powershell
+# From the project directory, without installing
+.\target\release\netpulse.exe
+
+# Or, if installed with `cargo install --path .`
+netpulse
+```
+
+If PowerShell blocks the command with an execution-policy or path error, run it with an explicit path, e.g. `& ".\target\release\netpulse.exe"`.
+
+### macOS
+
+```bash
+# From the project directory, without installing
+./target/release/netpulse
+
+# Or, if installed with `cargo install --path .`
+netpulse
+```
+
+If macOS warns that the binary cannot be opened, allow it under **System Settings → Privacy & Security**, or run `xattr -d com.apple.quarantine ./target/release/netpulse`.
+
+### Linux
+
+```bash
+# From the project directory, without installing
+./target/release/netpulse
+
+# Or, if installed with `cargo install --path .`
+netpulse
+```
+
+If the binary is not executable, run `chmod +x ./target/release/netpulse` first.
+
+> **WSL:** run NetPulse inside the Linux distribution (not from Windows `cmd.exe`) so the terminal escape sequences render correctly.
+
+## Running a Speed Test
+
+1. Open a terminal on your OS.
+2. Start NetPulse with `netpulse` (or the direct binary path shown above).
+3. Press `R` to start a test. The status bar shows the current phase: latency, download, then upload.
+4. Watch the metric cards and live throughput chart update as the test runs.
+5. Press `H` to review recent results, then `H` again to return to the dashboard.
+6. Press `Q` or `Esc` to quit. The completed result is saved to `netpulse.db` automatically.
 
 ## Usage
 
