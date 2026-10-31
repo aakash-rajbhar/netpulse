@@ -26,7 +26,8 @@ A terminal-based internet speed test written in Rust. NetPulse measures download
 ## Requirements
 
 - A recent stable Rust toolchain (the project uses the 2024 edition).
-- A C compiler for the bundled SQLite build (`build-essential` on Debian/Ubuntu, Xcode Command Line Tools on macOS, MSVC Build Tools on Windows).
+- A C compiler for the bundled SQLite build (`build-essential` on Debian/Ubuntu, Xcode Command Line Tools on macOS).
+- On Windows, Visual Studio Build Tools with the **Desktop development with C++** workload, which provides the `link.exe` linker. The included `install.ps1` can install this for you.
 - An active internet connection (the speed tests use public Cloudflare endpoints).
 
 ## Getting Started
@@ -43,6 +44,8 @@ Restart the terminal after installing so `cargo` is on your `PATH`, then verify:
 ```bash
 cargo --version
 ```
+
+> **Windows:** Rust uses Microsoft's `link.exe` linker, so a missing Visual Studio Build Tools installation causes `error: linker 'link.exe' not found`. The `install.ps1` script below installs the Build Tools automatically.
 
 ### 2. Clone and build
 
@@ -73,6 +76,22 @@ Get-Command netpulse
 ```
 
 If you prefer not to install it, run the binary directly from the project directory using the OS-specific commands below.
+
+#### Windows one-command install
+
+From the project directory in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The script checks for `cargo`, installs the Microsoft C++ Build Tools if `link.exe` is unavailable (via `winget`), configures the MSVC environment, and runs `cargo install --path . --locked`. Open a new terminal afterwards and run:
+
+```powershell
+netpulse
+```
+
+If the Build Tools are already installed, plain `cargo install --path . --locked` is enough.
 
 ## Run NetPulse by Operating System
 
@@ -117,6 +136,20 @@ netpulse
 If the binary is not executable, run `chmod +x ./target/release/netpulse` first.
 
 > **WSL:** run NetPulse inside the Linux distribution (not from Windows `cmd.exe`) so the terminal escape sequences render correctly.
+
+## Troubleshooting
+
+### `error: linker 'link.exe' not found` (Windows)
+
+Rust's MSVC toolchain needs the Microsoft linker. Run `.\install.ps1`, or install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the **Desktop development with C++** workload, then reopen the terminal and run:
+
+```powershell
+cargo install --path . --locked
+```
+
+### `netpulse` is not recognized
+
+Open a new terminal so the updated `PATH` is loaded. If it still is not found, add `%USERPROFILE%\.cargo\bin` to your user `PATH`, or run the binary directly as `.\target\release\netpulse.exe`.
 
 ## Running a Speed Test
 
